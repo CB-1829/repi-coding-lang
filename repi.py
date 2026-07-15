@@ -4,37 +4,30 @@ import re
 import math
 import random
 from pathlib import Path
+import tkinter as tk
+from tkinter import ttk, messagebox
 
-# ANSI escape codes for modern, colorized Windows Terminal styling
-CLR_SUCCESS = "\033[1;92m"   # Bold Light Green
-CLR_ERROR = "\033[1;91m"     # Bold Light Red
-CLR_WARNING = "\033[93m"     # Yellow
-CLR_INFO = "\033[94m"        # Light Blue
-CLR_MUTED = "\033[90m"       # Grey
-CLR_RESET = "\033[0m"        # Reset color
-CLR_BOLD = "\033[1m"         # Bold text
-CLR_CANVAS_BG = "\033[48;5;234m" # Dark grey block background for preview canvas
-
-# Enable ANSI escape processing on Windows Command Prompt / Powershell natively
-if os.name == 'nt':
-    os.system('')
+# Premium slate dark theme matching professional designer environments
+COLOR_BG_DARK = "#0F172A"       # Deep slate window background
+COLOR_WORKSPACE = "#1E293B"     # Dark canvas layout workspace
+COLOR_ACCENT = "#6366F1"        # Indigo highlighting
+COLOR_TEXT_PRIMARY = "#F8FAFC"  # Crisp off-white text
+COLOR_TEXT_MUTED = "#94A3B8"    # Grey descriptions
+COLOR_BORDER = "#334155"        # Slate separation borders
+COLOR_GRID_LINE = "#2D3748"     # Subtle layout grid color
 
 def evaluate_math_expression(expr, env_vars):
-    """
-    Evaluates algebraic and string concat expressions.
-    Supports standard operations: +, -, /, and 'x' for multiplication.
-    """
-    expr = expr.strip()
+    """Evaluates algebraic and string concatenation expressions safely."""
+    expr = str(expr).strip()
     if not expr:
         return 0
 
-    # Replace variables in the expression with their literal values
+    # Replace declared variables in expression
     for var_name, var_val in sorted(env_vars.items(), key=lambda x: len(x[0]), reverse=True):
         if var_name in expr:
             expr = expr.replace(var_name, str(var_val))
 
-    # Evaluate dynamic 'random min max' statements if present
-    # Format: random 10 50 -> yields value in range [10, 50]
+    # Parse random ranges: random 10 50
     random_matches = re.findall(r'random\s+(\d+|any)\s+(\d+|any)', expr)
     for r_min, r_max in random_matches:
         val_min = 0 if r_min == 'any' else int(r_min)
@@ -43,155 +36,158 @@ def evaluate_math_expression(expr, env_vars):
             val_min, val_max = val_max, val_min
         expr = re.sub(rf'random\s+{r_min}\s+{r_max}', str(random.randint(val_min, val_max)), expr, count=1)
 
-    # Normalize custom REPI math operators to Python format
-    # Supports 'x' for multiplication and '/' for division
+    # Convert custom math multiplication
     expr_normalized = expr.replace('x', '*').replace('X', '*')
 
     try:
-        # Evaluate cleanly while ignoring arbitrary unsafe strings
         sanitized = re.sub(r'[^0-9\+\-\*\/\(\)\s\.]', '', expr_normalized)
         if sanitized.strip():
             return int(eval(sanitized))
     except Exception:
         pass
     
-    return expr.strip('"\'') # Fallback as standard literal string
+    return expr.strip('"\'')
 
-def parse_repi_lines(lines, env_vars):
+def parse_repi_script(lines, env_vars):
     """
-    Parses hierarchical layout structures from text lines based on leading hyphen depth.
-    Builds nested dictionaries representing object creations and mutations.
+    Parses both nested tree structures and flat sequential lists (like 'test5673.repi').
+    Supports both 'create' and 'build' start commands.
     """
-    parsed_objects = []
-    current_action = None  # 'create', 'edit', 'delete'
+    compiled_objects = []
     current_obj = None
-    stack = [] # Tracking parent structures during indentation shifts
-
-    # Utility regex captures
-    re_array_dicts = re.compile(r'\[\s*\{(.*?)\}\s*\]') # Coordinates matching [{id:"p1", x:10, y:2}]
-    re_array_strs = re.compile(r'\[\s*"(.*?)"\s*\]')   # Lists matching ["item1", "item2"]
+    current_prop = None
+    current_sub_context = None # Keeps track of nested blocks like (backround), (text), (highlight)
 
     for raw_line in lines:
         cleaned = raw_line.strip()
         if not cleaned or cleaned.startswith("#"):
             continue
 
-        # Check top-level root operation controls
-        if cleaned == "create":
-            current_action = "create"
-            current_obj = {}
-            stack = [(0, current_obj)]
-            parsed_objects.append(("create", current_obj))
+        # Check action roots
+        if cleaned.lower() in ("create", "build"):
+            current_obj = {"type": "ui", "properties": {}}
+            compiled_objects.append(("create", current_obj))
+            current_prop = None
+            current_sub_context = None
             continue
-        elif cleaned == "edit":
-            current_action = "edit"
-            current_obj = {}
-            stack = [(0, current_obj)]
-            parsed_objects.append(("edit", current_obj))
+        elif cleaned.lower() == "edit":
+            current_obj = {"type": "edit", "properties": {}}
+            compiled_objects.append(("edit", current_obj))
+            current_prop = None
+            current_sub_context = None
             continue
-        elif cleaned.startswith("delete"):
-            target_id = cleaned.replace("delete", "").strip().strip("#").strip()
-            parsed_objects.append(("delete", {"id": target_id}))
+        elif cleaned.lower().startswith("delete"):
+            target_id = cleaned.lower().replace("delete", "").strip().strip("#").strip()
+            compiled_objects.append(("delete", {"id": target_id}))
             continue
-        elif "=" in cleaned and not cleaned.startswith("-"):
-            # Variable assignments: e.g., LET x = 10 x 5
+        elif "=" in cleaned and not cleaned.startswith("-") and not "[" in cleaned:
+            # Handle variable allocations
             parts = cleaned.split("=", 1)
             var_name = parts[0].replace("LET", "").strip()
             var_val = evaluate_math_expression(parts[1], env_vars)
             env_vars[var_name] = var_val
             continue
 
-        # Determine structural depth via leading hyphens
-        hyphen_match = re.match(r'^(-+)(.*)', raw_line)
-        if not hyphen_match:
-            continue
+        # Clean off any leading tree structure hyphens dynamically
+        hyphen_stripped = re.sub(r'^-+', '', raw_line).strip()
 
-        depth = len(hyphen_match.group(1))
-        content = hyphen_match.group(2).strip()
+        # Match active structural block types
+        match_type = re.match(r'^\[([a-zA-Z_]+)\]', hyphen_stripped)
+        match_prop = re.match(r'^\{([a-zA-Z_]+)\}', hyphen_stripped)
+        match_context = re.match(r'^\(([a-zA-Z_]+)\)', hyphen_stripped)
 
-        # Extract values or nested structural components
-        is_type = re.match(r'^\[([a-zA-Z_]+)\]', content)
-        is_key = re.match(r'^\{([a-zA-Z_]+)\}', content)
-        is_context = re.match(r'^\(([a-zA-Z_]+)\)', content)
-
-        # Unwind stack hierarchy for shallower indentation lines
-        while stack and stack[-1][0] >= depth:
-            stack.pop()
-
-        current_node = stack[-1][1] if stack else None
-
-        if is_type:
-            obj_type = is_type.group(1)
-            if current_node is not None:
-                current_node["type"] = obj_type
-                stack.append((depth, current_node))
-        elif is_key:
-            key_name = is_key.group(1)
-            if current_node is not None:
-                current_node[key_name] = {}
-                stack.append((depth, current_node[key_name]))
-        elif is_context:
-            context_name = is_context.group(1)
-            if current_node is not None:
-                current_node[context_name] = {}
-                stack.append((depth, current_node[context_name]))
+        if match_type:
+            obj_type = match_type.group(1).lower()
+            if current_obj is not None:
+                current_obj["type"] = obj_type
+            current_prop = None
+            current_sub_context = None
+        elif match_prop:
+            current_prop = match_prop.group(1).lower()
+            current_sub_context = None
+        elif match_context:
+            current_sub_context = match_context.group(1).lower()
         else:
-            # Parse actual values or value mappings
-            value_str = content
-            # Parse list of coordinate dict objects: e.g. [{id:"p1", x:10, y:20}]
-            if value_str.startswith("[{") and value_str.endswith("}]"):
-                parsed_list = []
-                inner_items = re.findall(r'\{(.*?)\}', value_str)
-                for item in inner_items:
-                    item_dict = {}
-                    # Split keys and values
-                    pairs = re.findall(r'([a-zA-Z0-9_]+)\s*:\s*([^,]+)', item)
-                    for k, v in pairs:
-                        v_eval = evaluate_math_expression(v, env_vars)
-                        item_dict[k] = v_eval
-                    parsed_list.append(item_dict)
-                if current_node is not None:
-                    # Merge or assign parsed list
-                    current_node["_value"] = parsed_list
-            # Parse standard lists of strings: e.g. ["FAMILY", "GROUPS"]
-            elif value_str.startswith("[") and value_str.endswith("]"):
-                items = [i.strip().strip('"\'') for i in value_str[1:-1].split(",")]
-                if current_node is not None:
-                    current_node["_value"] = items
-            # Parse style indicators like bold=T/F
-            elif "=" in value_str and current_node is not None:
-                parts = value_str.split("=", 1)
-                flag_name = parts[0].strip()
-                flag_val = parts[1].strip().upper() in ("T", "TRUE", "Y", "YES")
-                current_node[flag_name] = flag_val
-            # Standard leaf string or numerical value
-            else:
-                evaluated_val = evaluate_math_expression(value_str, env_vars)
-                if current_node is not None:
-                    current_node["_value"] = evaluated_val
+            # We have a value parameter line
+            if current_obj is not None and current_prop is not None:
+                props = current_obj["properties"]
+                
+                # Setup structure map if missing
+                if current_prop not in props:
+                    props[current_prop] = {}
 
-    return parsed_objects
+                # Parse coordinates arrays: [{id:"1", x:10, y:20}]
+                if hyphen_stripped.startswith("[{") and hyphen_stripped.endswith("}]"):
+                    coords_list = []
+                    item_blocks = re.findall(r'\{(.*?)\}', hyphen_stripped)
+                    for block in item_blocks:
+                        coordinate = {}
+                        pairs = re.findall(r'([a-zA-Z0-9_]+)\s*:\s*([^,]+)', block)
+                        for k, v in pairs:
+                            cleaned_v = v.strip().strip('"\'')
+                            coordinate[k] = evaluate_math_expression(cleaned_v, env_vars)
+                        coords_list.append(coordinate)
+                    props[current_prop]["_value"] = coords_list
 
-def flatten_repi_object(parsed_dict):
-    """
-    Helper that structures raw parsed dictionary trees into standard UI elements.
-    Example: extracts deep HEX and OPACITIES into easily renderable attributes.
-    """
+                # Parse list arrays: ["FAMILY", "GROUPS"]
+                elif hyphen_stripped.startswith("[") and hyphen_stripped.endswith("]"):
+                    items = [i.strip().strip('"\'') for i in hyphen_stripped[1:-1].split(",")]
+                    props[current_prop]["_value"] = items
+
+                # Parse key-value attributes inside blocks
+                elif "=" in hyphen_stripped:
+                    parts = hyphen_stripped.split("=", 1)
+                    sub_k = parts[0].strip().lower()
+                    sub_v = parts[1].strip()
+                    # Resolve boolean status flags
+                    if sub_v.upper() in ("T", "TRUE", "Y", "YES"):
+                        resolved_v = True
+                    elif sub_v.upper() in ("F", "FALSE", "N", "NO"):
+                        resolved_v = False
+                    else:
+                        resolved_v = evaluate_math_expression(sub_v, env_vars)
+
+                    if current_sub_context:
+                        if current_sub_context not in props[current_prop]:
+                            props[current_prop][current_sub_context] = {}
+                        props[current_prop][current_sub_context][sub_k] = resolved_v
+                    else:
+                        props[current_prop][sub_k] = resolved_v
+
+                # Parse single sequential leaf values (like HEX, opacities, or simple text bounds)
+                else:
+                    resolved_leaf = evaluate_math_expression(hyphen_stripped, env_vars)
+                    if current_sub_context:
+                        if current_sub_context not in props[current_prop]:
+                            props[current_prop][current_sub_context] = {}
+                        # Keep a sequence listing inside the subcontext
+                        if "_values" not in props[current_prop][current_sub_context]:
+                            props[current_prop][current_sub_context]["_values"] = []
+                        props[current_prop][current_sub_context]["_values"].append(resolved_leaf)
+                    else:
+                        if "_values" not in props[current_prop]:
+                            props[current_prop]["_values"] = []
+                        props[current_prop]["_values"].append(resolved_leaf)
+
+    return compiled_objects
+
+def flatten_repi_object(parsed_struct):
+    """Flattens a dynamic properties dictionary into standard coordinate & styling primitives."""
     flat = {
         "id": "unnamed",
-        "type": parsed_dict.get("type", "unknown"),
+        "type": parsed_struct.get("type", "ui"),
         "familys": [],
         "groups": [],
-        "color_bg": "#FFFFFF",
-        "color_fg": "#000000",
-        "color_hl": None,
+        "color_bg": "#4F46E5",  # Default nice indigo fallback
+        "color_fg": "#FFFFFF",
+        "color_hl": "#818CF8",
         "opacity_bg": 1.0,
         "opacity_fg": 1.0,
         "opacity_hl": 1.0,
         "points": [],
         "location": [],
         "text": "",
-        "font": "Consolas",
+        "font": "Segoe UI",
         "style_bold": False,
         "style_italic": False,
         "style_underline": False,
@@ -199,280 +195,499 @@ def flatten_repi_object(parsed_dict):
         "source": ""
     }
 
-    # Extract metadata properties from [ALL_OBJECTS] block
-    all_objs = parsed_dict.get("ALL_OBJECTS", {})
-    if all_objs:
-        if "id" in all_objs and isinstance(all_objs["id"], dict):
-            flat["id"] = all_objs["id"].get("_value", "unnamed")
-        if "familys" in all_objs and isinstance(all_objs["familys"], dict):
-            flat["familys"] = all_objs["familys"].get("_value", [])
-        if "groups" in all_objs and isinstance(all_objs["groups"], dict):
-            flat["groups"] = all_objs["groups"].get("_value", [])
+    props = parsed_struct.get("properties", {})
 
-    # Extract dynamic custom attributes based on design tokens
-    for key, val in parsed_dict.items():
-        if key == "ALL_OBJECTS" or key == "type":
-            continue
-        if not isinstance(val, dict):
-            continue
+    # Extract identification parameters
+    if "all_objects" in props:
+        meta = props["all_objects"]
+        if "id" in meta and "_values" in meta["id"]:
+            flat["id"] = str(meta["id"]["_values"][0])
+        if "familys" in meta and "_value" in meta["familys"]:
+            flat["familys"] = meta["familys"]["_value"]
+        if "groups" in meta and "_value" in meta["groups"]:
+            flat["groups"] = meta["groups"]["_value"]
 
-        if key == "color":
-            # Check nested colors: background, text, highlight
-            for layer in ["backround", "text", "highlight"]:
-                if layer in val and isinstance(val[layer], dict):
-                    # Gather nested leaf values
-                    hex_val = "#FFFFFF"
-                    opacity_val = 1.0
-                    for sub_k, sub_v in val[layer].items():
-                        if isinstance(sub_v, dict):
-                            val_to_check = sub_v.get("_value", "")
-                            if str(val_to_check).startswith("#"):
-                                hex_val = val_to_check
-                            else:
-                                try:
-                                    opacity_val = float(val_to_check)
-                                except ValueError:
-                                    pass
-                    if layer == "backround":
-                        flat["color_bg"] = hex_val
-                        flat["opacity_bg"] = opacity_val
-                    elif layer == "text":
-                        flat["color_fg"] = hex_val
-                        flat["opacity_fg"] = opacity_val
-                    elif layer == "highlight":
-                        flat["color_hl"] = hex_val
-                        flat["opacity_hl"] = opacity_val
-            # Fallback flat color definition
-            if "_value" in val:
-                flat["color_bg"] = val["_value"]
+    # Extract coordinates points
+    if "points" in props and "_value" in props["points"]:
+        flat["points"] = props["points"]["_value"]
+    if "location" in props and "_value" in props["location"]:
+        flat["location"] = props["location"]["_value"]
 
-        elif key == "points":
-            flat["points"] = val.get("_value", [])
-        elif key == "location":
-            flat["location"] = val.get("_value", [])
-        elif key == "text":
-            flat["text"] = val.get("_value", "")
-        elif key == "font":
-            flat["font"] = val.get("_value", "")
-        elif key == "source":
-            flat["source"] = val.get("_value", "")
-        elif key == "style":
-            flat["style_bold"] = val.get("bold", False)
-            flat["style_italic"] = val.get("italic", False)
-            flat["style_underline"] = val.get("underline", False)
-            flat["style_strikethrough"] = val.get("strikethrough", False)
+    # Extract literal values
+    if "text" in props:
+        text_prop = props["text"]
+        if "_values" in text_prop:
+            flat["text"] = str(text_prop["_values"][0])
+    if "font" in props:
+        font_prop = props["font"]
+        if "_values" in font_prop:
+            flat["font"] = str(font_prop["_values"][0])
+    if "source" in props:
+        src_prop = props["source"]
+        if "_values" in src_prop:
+            flat["source"] = str(src_prop["_values"][0])
+
+    # Extract styling parameters
+    if "style" in props:
+        style_prop = props["style"]
+        flat["style_bold"] = style_prop.get("bold", False)
+        flat["style_italic"] = style_prop.get("italic", False)
+        flat["style_underline"] = style_prop.get("underline", False)
+        flat["style_strikethrough"] = style_prop.get("strikethrough", False)
+
+    # Extract layer color values safely
+    if "color" in props:
+        col_prop = props["color"]
+        
+        # Check explicit layer definitions (e.g. (backround) -> HEX, OPACITY)
+        for layer in ["backround", "text", "highlight"]:
+            if layer in col_prop:
+                layer_data = col_prop[layer]
+                values = layer_data.get("_values", [])
+                
+                # Default assignments based on elements listed
+                hex_color = None
+                opacity_val = 1.0
+                for v in values:
+                    if str(v).startswith("#"):
+                        hex_color = v
+                    else:
+                        try:
+                            # Parse float opacities or percentage integers
+                            raw_f = float(v)
+                            opacity_val = raw_f / 100.0 if raw_f > 1.0 else raw_f
+                        except ValueError:
+                            pass
+                
+                if layer == "backround" and hex_color:
+                    flat["color_bg"] = hex_color
+                    flat["opacity_bg"] = opacity_val
+                elif layer == "text" and hex_color:
+                    flat["color_fg"] = hex_color
+                    flat["opacity_fg"] = opacity_val
+                elif layer == "highlight" and hex_color:
+                    flat["color_hl"] = hex_color
+                    flat["opacity_hl"] = opacity_val
+
+        # Check for sequential flat lists of color values (e.g. HEX on line 1, Opacity on line 2)
+        if "_values" in col_prop:
+            flat_vals = col_prop["_values"]
+            for fv in flat_vals:
+                if str(fv).startswith("#"):
+                    flat["color_bg"] = fv
+                else:
+                    try:
+                        raw_f = float(fv)
+                        flat["opacity_bg"] = raw_f / 100.0 if raw_f > 1.0 else raw_f
+                    except ValueError:
+                        pass
 
     return flat
 
-def draw_line(x0, y0, x1, y1, char, canvas, width, height):
-    """Rasterizes vector line coordinates using a basic Bresenham algorithm."""
-    dx = abs(x1 - x0)
-    dy = abs(y1 - y0)
-    sx = 1 if x0 < x1 else -1
-    sy = 1 if y0 < y1 else -1
-    err = dx - dy
-
-    while True:
-        if 0 <= x0 < width and 0 <= y0 < height:
-            canvas[y0][x0] = char
-
-        if x0 == x1 and y0 == y1:
-            break
-        e2 = 2 * err
-        if e2 > -dy:
-            err -= dy
-            x0 += sx
-        if e2 < dx:
-            err += dx
-            y0 += sy
-
-def render_ascii_canvas(objects):
-    """
-    Renders compiled UI component objects inside a beautiful terminal ASCII mock-up.
-    Generates a 80x22 layout preview directly inside PowerShell / command shells.
-    """
-    width = 80
-    height = 22
-    
-    # Initialize workspace with quiet dot canvas pattern
-    canvas = [["·" for _ in range(width)] for _ in range(height)]
-
-    for obj in objects:
-        obj_type = obj.get("type", "unknown").lower()
+class REPIDesignerWindow(tk.Tk):
+    """A premium, high-contrast vector UI designer interface to render compiled shapes."""
+    def __init__(self, script_path, code_string, objects_list):
+        super().__init__()
+        self.script_path = script_path
+        self.code_string = code_string
+        self.objects_list = objects_list
         
-        if obj_type == "ui":
-            # Render a custom shape / polygon from designated points array
-            pts = obj.get("points", [])
-            if len(pts) >= 2:
-                # Render lines between consecutive vertices
-                for i in range(len(pts)):
-                    p_start = pts[i]
-                    p_end = pts[(i + 1) % len(pts)]
+        self.title(f"REPI Workspace - {os.path.basename(script_path)}")
+        self.geometry("1024x768")
+        self.minsize(800, 600)
+        self.configure(bg=COLOR_BG_DARK)
+
+        # Rendering options
+        self.show_grid = tk.BooleanVar(value=True)
+        self.scale_factor = 1.0
+
+        self.build_ui()
+        self.draw_workspace()
+
+    def build_ui(self):
+        # 1. TOP UTILITY ACTION BAR
+        top_bar = tk.Frame(self, bg=COLOR_BG_DARK, height=55, bd=0)
+        top_bar.pack(fill=tk.X, side=tk.TOP, padx=15, pady=10)
+
+        title_container = tk.Frame(top_bar, bg=COLOR_BG_DARK)
+        title_container.pack(side=tk.LEFT)
+
+        file_label = tk.Label(
+            title_container,
+            text=os.path.basename(self.script_path).upper(),
+            font=("Segoe UI", 13, "bold"),
+            bg=COLOR_BG_DARK,
+            fg=COLOR_TEXT_PRIMARY
+        )
+        file_label.pack(anchor=tk.W)
+
+        path_label = tk.Label(
+            title_container,
+            text=f"Rendering: {self.script_path}",
+            font=("Segoe UI", 8, "italic"),
+            bg=COLOR_BG_DARK,
+            fg=COLOR_TEXT_MUTED
+        )
+        path_label.pack(anchor=tk.W)
+
+        # Control Panel Actions
+        control_frame = tk.Frame(top_bar, bg=COLOR_BG_DARK)
+        control_frame.pack(side=tk.RIGHT, pady=5)
+
+        btn_grid = tk.Checkbutton(
+            control_frame,
+            text="Show Designer Grid",
+            variable=self.show_grid,
+            onvalue=True,
+            offvalue=False,
+            bg=COLOR_BG_DARK,
+            fg=COLOR_TEXT_PRIMARY,
+            selectcolor=COLOR_BG_DARK,
+            activebackground=COLOR_BG_DARK,
+            activeforeground=COLOR_TEXT_PRIMARY,
+            font=("Segoe UI", 9),
+            command=self.draw_workspace
+        )
+        btn_grid.pack(side=tk.LEFT, padx=15)
+
+        btn_reload = tk.Button(
+            control_frame,
+            text="Sync & Reload File",
+            font=("Segoe UI", 9, "bold"),
+            bg=COLOR_ACCENT,
+            fg=COLOR_TEXT_PRIMARY,
+            activebackground="#4F46E5",
+            activeforeground=COLOR_TEXT_PRIMARY,
+            relief="flat",
+            padx=15,
+            pady=6,
+            cursor="hand2",
+            command=self.reload_file_contents
+        )
+        btn_reload.pack(side=tk.LEFT, padx=5)
+
+        # 2. MAIN LAYOUT WORKSPACE
+        layout_pane = tk.Frame(self, bg=COLOR_BG_DARK)
+        layout_pane.pack(fill=tk.BOTH, expand=True, padx=15, pady=(0, 15))
+
+        # Sidebar elements controller
+        self.sidebar = tk.Frame(layout_pane, width=240, bg=COLOR_WORKSPACE, highlightthickness=1, highlightbackground=COLOR_BORDER)
+        self.sidebar.pack(fill=tk.Y, side=tk.LEFT, padx=(0, 15))
+        self.sidebar.pack_propagate(False)
+
+        sidebar_title = tk.Label(
+            self.sidebar,
+            text="COMPILED OBJECTS",
+            font=("Segoe UI", 9, "bold"),
+            bg=COLOR_WORKSPACE,
+            fg=COLOR_TEXT_MUTED,
+            anchor="w",
+            padx=15,
+            pady=12
+        )
+        sidebar_title.pack(fill=tk.X)
+
+        self.objects_tree = ttk.Treeview(self.sidebar, show="tree", selectmode="browse")
+        self.objects_tree.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+        self.objects_tree.bind("<<TreeviewSelect>>", self.on_select_object_node)
+
+        # Style override for tree view list
+        tree_style = ttk.Style()
+        tree_style.theme_use("clam")
+        tree_style.configure(
+            "Treeview",
+            background=COLOR_WORKSPACE,
+            fieldbackground=COLOR_WORKSPACE,
+            foreground=COLOR_TEXT_PRIMARY,
+            rowheight=26,
+            font=("Segoe UI", 9),
+            borderwidth=0
+        )
+        tree_style.map("Treeview", background=[("selected", COLOR_ACCENT)], foreground=[("selected", COLOR_TEXT_PRIMARY)])
+
+        # Interactive Vector Designer Canvas View
+        canvas_wrapper = tk.Frame(layout_pane, bg=COLOR_WORKSPACE, highlightthickness=1, highlightbackground=COLOR_BORDER)
+        canvas_wrapper.pack(fill=tk.BOTH, expand=True, side=tk.RIGHT)
+
+        self.canvas = tk.Canvas(canvas_wrapper, bg=COLOR_WORKSPACE, highlightthickness=0)
+        self.canvas.pack(fill=tk.BOTH, expand=True)
+
+        # Bind window resize action to trigger redraw
+        self.canvas.bind("<Configure>", lambda event: self.draw_workspace())
+
+    def populate_sidebar_list(self):
+        """Refreshes structural tree node items in sidebar."""
+        for child in self.objects_tree.get_children():
+            self.objects_tree.delete(child)
+
+        for obj in self.objects_list:
+            node_id = obj.get("id", "unnamed")
+            node_type = obj.get("type", "unknown").upper()
+            display_text = f" {node_id} [{node_type}]"
+            self.objects_tree.insert("", tk.END, iid=node_id, text=display_text)
+
+    def on_select_object_node(self, event):
+        """Highlights the selected vector item node inside canvas workspace."""
+        selected_items = self.objects_tree.selection()
+        if not selected_items:
+            return
+        node_id = selected_items[0]
+        self.draw_workspace(highlight_id=node_id)
+
+    def draw_workspace(self, highlight_id=None):
+        """Renders vector elements with precision on designer canvas."""
+        self.canvas.delete("all")
+        self.populate_sidebar_list()
+
+        width = self.canvas.winfo_width()
+        height = self.canvas.winfo_height()
+
+        if width <= 1 or height <= 1:
+            return
+
+        # Render subtle coordinates grid matrix
+        if self.show_grid.get():
+            grid_interval = 40
+            for x in range(0, width, grid_interval):
+                self.canvas.create_line(x, 0, x, height, fill=COLOR_GRID_LINE, width=1)
+            for y in range(0, height, grid_interval):
+                self.canvas.create_line(0, y, width, y, fill=COLOR_GRID_LINE, width=1)
+
+        # Draw vector layout elements sequentially
+        for obj in self.objects_list:
+            obj_type = obj.get("type", "unknown").lower()
+            is_highlighted = (obj.get("id") == highlight_id)
+
+            outline_color = COLOR_ACCENT if is_highlighted else COLOR_BORDER
+            outline_width = 3 if is_highlighted else 1
+
+            # Handle Polygon/Vector UI element shape drawing
+            if obj_type == "ui":
+                pts = obj.get("points", [])
+                if len(pts) >= 2:
+                    coords = []
+                    for p in pts:
+                        try:
+                            coords.append(float(p.get("x", 0)))
+                            coords.append(float(p.get("y", 0)))
+                        except (ValueError, TypeError):
+                            pass
+                    
+                    if len(coords) >= 4:
+                        # Draw filled polygon boundary or outline loops
+                        if len(coords) == 4:
+                            self.canvas.create_line(
+                                coords[0], coords[1], coords[2], coords[3],
+                                fill=obj.get("color_bg", "#FFFFFF"),
+                                width=outline_width + 1,
+                                tags=obj.get("id")
+                            )
+                        else:
+                            self.canvas.create_polygon(
+                                coords,
+                                fill=obj.get("color_bg", "#4F46E5"),
+                                outline=outline_color,
+                                width=outline_width,
+                                tags=obj.get("id")
+                            )
+                elif len(pts) == 1:
+                    # Single point coordinate layout mark
                     try:
-                        x0, y0 = int(p_start.get("x", 0)), int(p_start.get("y", 0))
-                        x1, y1 = int(p_end.get("x", 0)), int(p_end.get("y", 0))
-                        draw_line(x0, y0, x1, y1, "*", canvas, width, height)
-                    except ValueError:
-                        continue
-            elif len(pts) == 1:
-                # Single point plot
-                try:
-                    px = int(pts[0].get("x", 0))
-                    py = int(pts[0].get("y", 0))
-                    if 0 <= px < width and 0 <= py < height:
-                        canvas[py][px] = "✦"
-                except ValueError:
-                    pass
+                        px = float(pts[0].get("x", 0))
+                        py = float(pts[0].get("y", 0))
+                        r = 6
+                        self.canvas.create_oval(
+                            px - r, py - r, px + r, py + r,
+                            fill=obj.get("color_bg", COLOR_ACCENT),
+                            outline=outline_color,
+                            width=outline_width,
+                            tags=obj.get("id")
+                        )
+                    except (ValueError, TypeError):
+                        pass
 
-        elif obj_type == "text":
-            # Render descriptive text nodes onto layout grid
-            loc = obj.get("location", [])
-            if loc:
-                try:
-                    tx = int(loc[0].get("x", 0))
-                    ty = int(loc[0].get("y", 0))
-                    text_str = str(obj.get("text", ""))
-                    for offset, char in enumerate(text_str):
-                        cx = tx + offset
-                        if 0 <= cx < width and 0 <= ty < height:
-                            canvas[ty][cx] = char
-                except ValueError:
-                    pass
+            # Handle Text Element drawing
+            elif obj_type == "text":
+                loc = obj.get("location", [])
+                if loc:
+                    try:
+                        tx = float(loc[0].get("x", 0))
+                        ty = float(loc[0].get("y", 0))
+                        
+                        # Apply custom text modifications
+                        font_style = []
+                        if obj.get("style_bold"): font_style.append("bold")
+                        if obj.get("style_italic"): font_style.append("italic")
+                        if obj.get("style_underline"): font_style.append("underline")
+                        
+                        font_spec = (obj.get("font", "Segoe UI"), 10, " ".join(font_style))
+                        
+                        # Text background boundary box rendering
+                        t_id = self.canvas.create_text(
+                            tx, ty,
+                            text=obj.get("text", ""),
+                            font=font_spec,
+                            fill=obj.get("color_fg", COLOR_TEXT_PRIMARY),
+                            anchor="nw",
+                            tags=obj.get("id")
+                        )
+                        
+                        # Handle text bounding box background shading
+                        bbox = self.canvas.bbox(t_id)
+                        if bbox:
+                            # Push background card to lower layer stack below text nodes
+                            bg_rect = self.canvas.create_rectangle(
+                                bbox[0] - 4, bbox[1] - 4, bbox[2] + 4, bbox[3] + 4,
+                                fill=obj.get("color_bg", COLOR_WORKSPACE),
+                                outline=outline_color if is_highlighted else "",
+                                width=outline_width,
+                                tags=obj.get("id")
+                            )
+                            self.canvas.tag_lower(bg_rect, t_id)
+                    except (ValueError, TypeError, IndexError):
+                        pass
 
-        elif obj_type == "button":
-            # Render stylized buttons surrounded by structural borders
-            loc = obj.get("location", [])
-            if loc:
-                try:
-                    bx = int(loc[0].get("x", 0))
-                    by = int(loc[0].get("y", 0))
-                    label = f" [ {str(obj.get('text', 'Button'))} ] "
-                    for offset, char in enumerate(label):
-                        cx = bx + offset
-                        if 0 <= cx < width and 0 <= by < height:
-                            canvas[by][cx] = char
-                except ValueError:
-                    pass
+            # Handle Button Component drawing
+            elif obj_type == "button":
+                loc = obj.get("location", [])
+                if loc:
+                    try:
+                        bx = float(loc[0].get("x", 0))
+                        by = float(loc[0].get("y", 0))
+                        
+                        label_text = obj.get("text", "Button")
+                        font_spec = (obj.get("font", "Segoe UI"), 9, "bold" if obj.get("style_bold") else "normal")
+                        
+                        # Generate flat layout dimension
+                        pad_x, pad_y = 16, 8
+                        t_id = self.canvas.create_text(
+                            bx, by,
+                            text=label_text,
+                            font=font_spec,
+                            fill=obj.get("color_fg", COLOR_TEXT_PRIMARY),
+                            anchor="center",
+                            tags=obj.get("id")
+                        )
+                        
+                        bbox = self.canvas.bbox(t_id)
+                        if bbox:
+                            btn_card = self.canvas.create_rectangle(
+                                bbox[0] - pad_x, bbox[1] - pad_y, bbox[2] + pad_x, bbox[3] + pad_y,
+                                fill=obj.get("color_bg", "#4F46E5"),
+                                outline=outline_color,
+                                width=outline_width,
+                                tags=obj.get("id")
+                            )
+                            self.canvas.tag_lower(btn_card, t_id)
+                    except (ValueError, TypeError, IndexError):
+                        pass
 
-        elif obj_type == "image":
-            # Render a visual image block layout
-            loc = obj.get("location", [])
-            if loc:
-                try:
-                    ix = int(loc[0].get("x", 0))
-                    iy = int(loc[0].get("y", 0))
-                    # Default image dimensions (bounding box block)
-                    img_w, img_h = 12, 4
-                    for dy in range(img_h):
-                        for dx in range(img_w):
-                            cx, cy = ix + dx, iy + dy
-                            if 0 <= cx < width and 0 <= cy < height:
-                                if dy == 0 or dy == img_h - 1 or dx == 0 or dx == img_w - 1:
-                                    canvas[cy][cx] = "▩"
-                                elif dy == img_h // 2 and 1 <= dx <= len("IMG"):
-                                    canvas[cy][cx] = "IMG"[dx-1]
-                                else:
-                                    canvas[cy][cx] = " "
-                except ValueError:
-                    pass
+            # Handle Image Block Placeholder drawing
+            elif obj_type == "image":
+                loc = obj.get("location", [])
+                if loc:
+                    try:
+                        ix = float(loc[0].get("x", 0))
+                        iy = float(loc[0].get("y", 0))
+                        iw, ih = 140, 90
+                        
+                        # Draw high fidelity mockup placeholder card representing vector image
+                        img_card = self.canvas.create_rectangle(
+                            ix, iy, ix + iw, iy + ih,
+                            fill=obj.get("color_bg", "#1E293B"),
+                            outline=outline_color,
+                            width=outline_width,
+                            tags=obj.get("id")
+                        )
+                        
+                        # Draw visual center icon placeholder
+                        self.canvas.create_line(ix, iy, ix + iw, iy + ih, fill=COLOR_BORDER, width=1)
+                        self.canvas.create_line(ix, iy + ih, ix + iw, iy, fill=COLOR_BORDER, width=1)
+                        
+                        self.canvas.create_text(
+                            ix + iw/2, iy + ih/2,
+                            text="[IMAGE]",
+                            font=("Segoe UI", 9, "bold"),
+                            fill=COLOR_TEXT_MUTED,
+                            anchor="center",
+                            tags=obj.get("id")
+                        )
+                    except (ValueError, TypeError, IndexError):
+                        pass
 
-    # Print fully compiled visual layout to PowerShell terminal
-    print(f"\n{CLR_INFO}┌───────────────────────────────── {CLR_BOLD}LIVE TERMINAL PREVIEW WORKSPACE{CLR_RESET}{CLR_INFO} ─────────────────────────────────┐{CLR_RESET}")
-    for row in canvas:
-        row_str = "".join(row)
-        # Apply slight background shading to preview canvas frame
-        print(f"{CLR_INFO}│{CLR_RESET}{CLR_CANVAS_BG}{row_str}{CLR_RESET}{CLR_INFO}│{CLR_RESET}")
-    print(f"{CLR_INFO}└──────────────────────────────────────────────────────────────────────────────────────────────────┘{CLR_RESET}\n")
+    def reload_file_contents(self):
+        """Reloads and recompiles active script lines from local file system storage."""
+        if not os.path.exists(self.script_path):
+            messagebox.showerror("Error", f"Failed to sync. File not found:\n{self.script_path}")
+            return
 
-def execute_repi_code(code_string):
-    """Compiles and executes parsed REPI directives step-by-step."""
-    env_vars = {
-        "VERSION": "1.1.0",
-        "OBJECT_COUNT": 0
-    }
-    
-    compiled_objects = {} # ID mapping of compiled elements
+        try:
+            with open(self.script_path, "r", encoding="utf-8") as f:
+                new_content = f.read()
 
-    lines = code_string.splitlines()
-    parsed_operations = parse_repi_lines(lines, env_vars)
+            env_vars = {"VERSION": "1.1.0", "OBJECT_COUNT": 0}
+            lines = new_content.splitlines()
+            parsed_ops = parse_repi_script(lines, env_vars)
 
-    # Process operations
-    for action, data in parsed_operations:
-        if action == "create":
-            flat_obj = flatten_repi_object(data)
-            obj_id = flat_obj["id"]
-            compiled_objects[obj_id] = flat_obj
-            print(f"  {CLR_SUCCESS}[CREATED]{CLR_RESET} Element type '{flat_obj['type']}' with ID '{obj_id}'")
-        elif action == "edit":
-            obj_id = data.get("ALL_OBJECTS", {}).get("id", {}).get("_value")
-            if not obj_id:
-                # Find by nested structure or use fallback
-                obj_id = data.get("id", {}).get("_value")
+            # Re-verify and rebuild objects mappings
+            new_objects_map = {}
+            for action, data in parsed_ops:
+                if action == "create":
+                    flat = flatten_repi_object(data)
+                    new_objects_map[flat["id"]] = flat
+                elif action == "edit":
+                    obj_id = data.get("properties", {}).get("all_objects", {}).get("id", {}).get("_values", ["unnamed"])[0]
+                    if obj_id in new_objects_map:
+                        flat_edit = flatten_repi_object(data)
+                        orig = new_objects_map[obj_id]
+                        for k, v in flat_edit.items():
+                            if k == "id": continue
+                            if v not in (None, [], "", False) or k.startswith("style_"):
+                                orig[k] = v
+                elif action == "delete":
+                    obj_id = data.get("id")
+                    if obj_id in new_objects_map:
+                        del new_objects_map[obj_id]
+
+            self.objects_list = list(new_objects_map.values())
+            self.draw_workspace()
             
-            if obj_id in compiled_objects:
-                flat_edit = flatten_repi_object(data)
-                # Merge edit parameters onto original element structure safely
-                orig = compiled_objects[obj_id]
-                for k, v in flat_edit.items():
-                    # Keep ID unchanged
-                    if k == "id":
-                        continue
-                    # Overwrite default parameters if values exist
-                    if v not in (None, [], "", False) or k.startswith("style_"):
-                        orig[k] = v
-                print(f"  {CLR_INFO}[UPDATED]{CLR_RESET} Modified parameters for ID '{obj_id}'")
-            else:
-                print(f"  {CLR_WARNING}[NOTICE]{CLR_RESET} Attempted to edit non-existent ID '{obj_id}'")
-        elif action == "delete":
-            obj_id = data.get("id")
-            if obj_id in compiled_objects:
-                del compiled_objects[obj_id]
-                print(f"  {CLR_ERROR}[DELETED]{CLR_RESET} Removed ID '{obj_id}' from preview list")
-            else:
-                print(f"  {CLR_WARNING}[NOTICE]{CLR_RESET} ID '{obj_id}' not found for removal")
-
-    # Render layout workspace to active PowerShell session
-    if compiled_objects:
-        render_ascii_canvas(compiled_objects.values())
-    else:
-        print(f"\n{CLR_WARNING}[Notice] No visual elements queued inside active environment.{CLR_RESET}\n")
+        except Exception as e:
+            messagebox.showerror("Parser Error", f"Failed parsing the updated schema script:\n{str(e)}")
 
 def register_repi_extension():
-    """Associates .repi file types with the global python runner inside Windows Registry."""
+    """Associates file format .repi with our execution tool inside Windows system registries."""
     if os.name != 'nt':
-        print(f"{CLR_ERROR}File associations are only supported on Windows operating systems.{CLR_RESET}")
+        print("[ERROR] Registrations can only run inside a Windows workspace.")
         return False
     
     import winreg
     try:
-        # Determine execution path
         python_exe = sys.executable
         if python_exe.endswith("pythonw.exe"):
             python_exe = python_exe.replace("pythonw.exe", "python.exe")
             
         script_path = os.path.abspath(__file__)
         
-        # 1. Map extension tag to system file class
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Software\Classes\.repi") as key:
             winreg.SetValueEx(key, "", 0, winreg.REG_SZ, "repi_file")
             
-        # 2. Instruct file system to route through active PowerShell session
+        # Register shell actions to execute using the graphical designer mode window directly!
         command_path = r"Software\Classes\repi_file\shell\open\command"
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, command_path) as key:
-            # -NoExit parameter ensures PowerShell tab stays active for user inputs
-            command_string = f'powershell.exe -NoExit -Command "& \\"{python_exe}\\" \\"{script_path}\\" \\"%1\\""'
-            winreg.SetValueEx(key, "", 0, winreg.REG_SZ, command_string)
+            # Running with raw interpreter directly initiates our Tkinter loop without spawning terminal window!
+            cmd_line = f'"{python_exe}" "{script_path}" "%1"'
+            winreg.SetValueEx(key, "", 0, winreg.REG_SZ, cmd_line)
             
-        print(f"\n{CLR_SUCCESS}SYSTEM FILE ASSOCIATION REGISTERED SUCCESSFULLY!{CLR_RESET}")
-        print(f"{CLR_INFO}Target Path:{CLR_RESET} {script_path}")
-        print(f"You can now double-click any `.repi` file in Explorer to run it inside PowerShell!\n")
+        print("\n[SUCCESS] NATIVE REPI SYSTEM PREVIEW WINDOW REGISTRATION COMPLETED!")
+        print(f"Associated To Command Line:\n  {cmd_line}\n")
         return True
     except Exception as e:
-        print(f"\n{CLR_ERROR}Registry Write Failure:{CLR_RESET} Confirm administrator privileges.\n{str(e)}\n")
+        print(f"\n[ERROR] Registry registration failed: {str(e)}\n")
         return False
 
 def unregister_repi_extension():
-    """Clears and removes .repi registry configurations safely."""
+    """Removes all .repi system registry values safely."""
     if os.name != 'nt':
         return False
     
@@ -485,56 +700,25 @@ def unregister_repi_extension():
         r"Software\Classes\.repi"
     ]
     
-    print(f"\n{CLR_INFO}Starting registry clean...{CLR_RESET}")
+    print("\n[INFO] Starting registry cleaning...")
     success = True
-    for path in keys_to_delete:
+    for p in keys_to_delete:
         try:
-            winreg.DeleteKey(winreg.HKEY_CURRENT_USER, path)
+            winreg.DeleteKey(winreg.HKEY_CURRENT_USER, p)
         except FileNotFoundError:
             pass
         except Exception as e:
-            print(f"{CLR_WARNING}Key removal warning '{path}': {str(e)}{CLR_RESET}")
+            print(f"[WARNING] Could not delete node key '{p}': {str(e)}")
             success = False
             
     if success:
-        print(f"\n{CLR_SUCCESS}REPI SYSTEM FILE ASSOCIATION UNINSTALLED CLEANLY!{CLR_RESET}")
+        print("\n[SUCCESS] SYSTEM FILE REGISTRY BINDINGS CLEARED!")
         return True
     return False
 
-def load_repi_file(filepath):
-    """Sanitizes arguments, inspects extensions, reads files, and runs them."""
-    filepath = filepath.strip('"\'')
-    filename = os.path.basename(filepath)
-    
-    if not filepath.lower().endswith(".repi"):
-        print(f"\n{CLR_ERROR}Strict Extension Error:{CLR_RESET}")
-        print(f"Cannot compile '{filename}'. Only '.repi' scripts are allowed by the compiler.\n")
-        return False
-
-    if not os.path.exists(filepath):
-        print(f"\n{CLR_ERROR}File Retrieval Failure:{CLR_RESET} '{filepath}' is missing or offline.\n")
-        return False
-
-    try:
-        with open(filepath, "r", encoding="utf-8") as file_stream:
-            content = file_stream.read()
-
-        print(f"\n{CLR_SUCCESS}.repi FILE SUCCESSFULLY OPENED{CLR_RESET}")
-        print(f"{CLR_INFO}Absolute Path:{CLR_RESET} {os.path.abspath(filepath)}")
-        print(f"{CLR_MUTED}" + "=" * 100 + f"{CLR_RESET}")
-        
-        # Compile and execute the parsed operations
-        execute_repi_code(content)
-            
-        print(f"{CLR_MUTED}" + "=" * 100 + f"{CLR_RESET}\n")
-        return True
-
-    except Exception as e:
-        print(f"\n{CLR_ERROR}Compiler Execution Interrupted:{CLR_RESET}\n{str(e)}\n")
-        return False
-
 def main():
     try:
+        # Check argument triggers
         if len(sys.argv) > 1:
             arg = sys.argv[1]
             if arg == "--register":
@@ -544,17 +728,71 @@ def main():
                 unregister_repi_extension()
                 return
             
-            # Execute file path
-            load_repi_file(arg)
+            # Treat argument as active script file
+            file_path = os.path.abspath(arg.strip('"\''))
+            if not file_path.lower().endswith(".repi"):
+                # Handle error feedback natively
+                root = tk.Tk()
+                root.withdraw()
+                messagebox.showerror(
+                    "Format Validation Failure",
+                    f"Rejected file execution. Target files must strictly carry the official '.repi' extension."
+                )
+                return
+                
+            if not os.path.exists(file_path):
+                root = tk.Tk()
+                root.withdraw()
+                messagebox.showerror(
+                    "Source Missing",
+                    f"Target file path is offline or inaccessible:\n{file_path}"
+                )
+                return
+
+            with open(file_path, "r", encoding="utf-8") as f:
+                content = f.read()
+
+            env_vars = {"VERSION": "1.1.0", "OBJECT_COUNT": 0}
+            lines = content.splitlines()
+            parsed_ops = parse_repi_script(lines, env_vars)
+
+            # Compile parsed visual elements list sequentially
+            objects_map = {}
+            for action, data in parsed_ops:
+                if action == "create":
+                    flat = flatten_repi_object(data)
+                    objects_map[flat["id"]] = flat
+                elif action == "edit":
+                    obj_id = data.get("properties", {}).get("all_objects", {}).get("id", {}).get("_values", ["unnamed"])[0]
+                    if obj_id in objects_map:
+                        flat_edit = flatten_repi_object(data)
+                        orig = objects_map[obj_id]
+                        for k, v in flat_edit.items():
+                            if k == "id": continue
+                            if v not in (None, [], "", False) or k.startswith("style_"):
+                                orig[k] = v
+                elif action == "delete":
+                    obj_id = data.get("id")
+                    if obj_id in objects_map:
+                        del objects_map[obj_id]
+
+            # Trigger live designer GUI workspace window directly!
+            app = REPIDesignerWindow(file_path, content, list(objects_map.values()))
+            app.mainloop()
             return
                 
         else:
-            print(f"{CLR_BOLD}[REPI COMPILER & INTERP]{CLR_RESET} System active.")
-            print(f"Use the command: {CLR_BOLD}python repi.py --register{CLR_RESET} to integrate double-click execution.")
-            print(f"Direct terminal run command: {CLR_BOLD}python repi.py your_script.repi{CLR_RESET}\n")
+            # Fallback console run instructions if loaded empty
+            print("[REPI DESIGN SYSTEM ENGINE ACTIVE]")
+            print("To run visual previews directly in separate workspace window windows, register the file associations:")
+            print("  python repi.py --register")
+            print("\nRun any explicit file script with:")
+            print("  python repi.py your_script.repi\n")
                 
     except Exception as e:
-        print(f"\n{CLR_ERROR}System Fault:{CLR_RESET} {str(e)}\n")
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showerror("Fatal Workspace System Crash", f"An unexpected error occurred:\n{str(e)}")
 
 if __name__ == "__main__":
     main()
