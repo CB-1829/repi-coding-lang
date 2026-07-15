@@ -5,22 +5,22 @@ import math
 import random
 from pathlib import Path
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import messagebox
 
-# Premium slate dark theme matching professional designer environments
-COLOR_BG_DARK = "#0F172A"       # Deep slate window background
-COLOR_WORKSPACE = "#1E293B"     # Dark canvas layout workspace
-COLOR_ACCENT = "#6366F1"        # Indigo highlighting
-COLOR_TEXT_PRIMARY = "#F8FAFC"  # Crisp off-white text
-COLOR_TEXT_MUTED = "#94A3B8"    # Grey descriptions
-COLOR_BORDER = "#334155"        # Slate separation borders
-COLOR_GRID_LINE = "#2D3748"     # Subtle layout grid color
+COLOR_BG_DARK = "#0F172A"       # Pure slate dark canvas background
+COLOR_ACCENT = "#6366F1"        # Highlight colors
+COLOR_TEXT_PRIMARY = "#F8FAFC"  # Crisp reading labels
+COLOR_BORDER = "#1E293B"        # Clean visual separations
 
 def evaluate_math_expression(expr, env_vars):
     """Evaluates algebraic and string concatenation expressions safely."""
     expr = str(expr).strip()
     if not expr:
         return 0
+
+    # If it is a hex color code, preserve it and bypass evaluation
+    if expr.startswith('#'):
+        return expr
 
     # Replace declared variables in expression
     for var_name, var_val in sorted(env_vars.items(), key=lambda x: len(x[0]), reverse=True):
@@ -56,7 +56,7 @@ def parse_repi_script(lines, env_vars):
     compiled_objects = []
     current_obj = None
     current_prop = None
-    current_sub_context = None # Keeps track of nested blocks like (backround), (text), (highlight)
+    current_sub_context = None
 
     for raw_line in lines:
         cleaned = raw_line.strip()
@@ -245,7 +245,6 @@ def flatten_repi_object(parsed_struct):
                 layer_data = col_prop[layer]
                 values = layer_data.get("_values", [])
                 
-                # Default assignments based on elements listed
                 hex_color = None
                 opacity_val = 1.0
                 for v in values:
@@ -253,7 +252,6 @@ def flatten_repi_object(parsed_struct):
                         hex_color = v
                     else:
                         try:
-                            # Parse float opacities or percentage integers
                             raw_f = float(v)
                             opacity_val = raw_f / 100.0 if raw_f > 1.0 else raw_f
                         except ValueError:
@@ -285,159 +283,42 @@ def flatten_repi_object(parsed_struct):
     return flat
 
 class REPIDesignerWindow(tk.Tk):
-    """A premium, high-contrast vector UI designer interface to render compiled shapes."""
+    """A premium, minimal vector window showing ONLY the compiled layout canvas."""
     def __init__(self, script_path, code_string, objects_list):
         super().__init__()
         self.script_path = script_path
         self.code_string = code_string
         self.objects_list = objects_list
         
+        # Pure workspace title
         self.title(f"REPI Workspace - {os.path.basename(script_path)}")
-        self.geometry("1024x768")
-        self.minsize(800, 600)
+        self.geometry("600x600")
+        self.minsize(300, 300)
         self.configure(bg=COLOR_BG_DARK)
 
-        # Rendering options
-        self.show_grid = tk.BooleanVar(value=True)
-        self.scale_factor = 1.0
+        # Designer settings (Default grid off for clean rendering)
+        self.show_grid = False
 
         self.build_ui()
         self.draw_workspace()
 
     def build_ui(self):
-        # 1. TOP UTILITY ACTION BAR
-        top_bar = tk.Frame(self, bg=COLOR_BG_DARK, height=55, bd=0)
-        top_bar.pack(fill=tk.X, side=tk.TOP, padx=15, pady=10)
-
-        title_container = tk.Frame(top_bar, bg=COLOR_BG_DARK)
-        title_container.pack(side=tk.LEFT)
-
-        file_label = tk.Label(
-            title_container,
-            text=os.path.basename(self.script_path).upper(),
-            font=("Segoe UI", 13, "bold"),
-            bg=COLOR_BG_DARK,
-            fg=COLOR_TEXT_PRIMARY
-        )
-        file_label.pack(anchor=tk.W)
-
-        path_label = tk.Label(
-            title_container,
-            text=f"Rendering: {self.script_path}",
-            font=("Segoe UI", 8, "italic"),
-            bg=COLOR_BG_DARK,
-            fg=COLOR_TEXT_MUTED
-        )
-        path_label.pack(anchor=tk.W)
-
-        # Control Panel Actions
-        control_frame = tk.Frame(top_bar, bg=COLOR_BG_DARK)
-        control_frame.pack(side=tk.RIGHT, pady=5)
-
-        btn_grid = tk.Checkbutton(
-            control_frame,
-            text="Show Designer Grid",
-            variable=self.show_grid,
-            onvalue=True,
-            offvalue=False,
-            bg=COLOR_BG_DARK,
-            fg=COLOR_TEXT_PRIMARY,
-            selectcolor=COLOR_BG_DARK,
-            activebackground=COLOR_BG_DARK,
-            activeforeground=COLOR_TEXT_PRIMARY,
-            font=("Segoe UI", 9),
-            command=self.draw_workspace
-        )
-        btn_grid.pack(side=tk.LEFT, padx=15)
-
-        btn_reload = tk.Button(
-            control_frame,
-            text="Sync & Reload File",
-            font=("Segoe UI", 9, "bold"),
-            bg=COLOR_ACCENT,
-            fg=COLOR_TEXT_PRIMARY,
-            activebackground="#4F46E5",
-            activeforeground=COLOR_TEXT_PRIMARY,
-            relief="flat",
-            padx=15,
-            pady=6,
-            cursor="hand2",
-            command=self.reload_file_contents
-        )
-        btn_reload.pack(side=tk.LEFT, padx=5)
-
-        # 2. MAIN LAYOUT WORKSPACE
-        layout_pane = tk.Frame(self, bg=COLOR_BG_DARK)
-        layout_pane.pack(fill=tk.BOTH, expand=True, padx=15, pady=(0, 15))
-
-        # Sidebar elements controller
-        self.sidebar = tk.Frame(layout_pane, width=240, bg=COLOR_WORKSPACE, highlightthickness=1, highlightbackground=COLOR_BORDER)
-        self.sidebar.pack(fill=tk.Y, side=tk.LEFT, padx=(0, 15))
-        self.sidebar.pack_propagate(False)
-
-        sidebar_title = tk.Label(
-            self.sidebar,
-            text="COMPILED OBJECTS",
-            font=("Segoe UI", 9, "bold"),
-            bg=COLOR_WORKSPACE,
-            fg=COLOR_TEXT_MUTED,
-            anchor="w",
-            padx=15,
-            pady=12
-        )
-        sidebar_title.pack(fill=tk.X)
-
-        self.objects_tree = ttk.Treeview(self.sidebar, show="tree", selectmode="browse")
-        self.objects_tree.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
-        self.objects_tree.bind("<<TreeviewSelect>>", self.on_select_object_node)
-
-        # Style override for tree view list
-        tree_style = ttk.Style()
-        tree_style.theme_use("clam")
-        tree_style.configure(
-            "Treeview",
-            background=COLOR_WORKSPACE,
-            fieldbackground=COLOR_WORKSPACE,
-            foreground=COLOR_TEXT_PRIMARY,
-            rowheight=26,
-            font=("Segoe UI", 9),
-            borderwidth=0
-        )
-        tree_style.map("Treeview", background=[("selected", COLOR_ACCENT)], foreground=[("selected", COLOR_TEXT_PRIMARY)])
-
-        # Interactive Vector Designer Canvas View
-        canvas_wrapper = tk.Frame(layout_pane, bg=COLOR_WORKSPACE, highlightthickness=1, highlightbackground=COLOR_BORDER)
-        canvas_wrapper.pack(fill=tk.BOTH, expand=True, side=tk.RIGHT)
-
-        self.canvas = tk.Canvas(canvas_wrapper, bg=COLOR_WORKSPACE, highlightthickness=0)
+        """Constructs a pure canvas-only viewport."""
+        # 100% window filled canvas
+        self.canvas = tk.Canvas(self, bg=COLOR_BG_DARK, highlightthickness=0)
         self.canvas.pack(fill=tk.BOTH, expand=True)
 
         # Bind window resize action to trigger redraw
         self.canvas.bind("<Configure>", lambda event: self.draw_workspace())
 
-    def populate_sidebar_list(self):
-        """Refreshes structural tree node items in sidebar."""
-        for child in self.objects_tree.get_children():
-            self.objects_tree.delete(child)
-
-        for obj in self.objects_list:
-            node_id = obj.get("id", "unnamed")
-            node_type = obj.get("type", "unknown").upper()
-            display_text = f" {node_id} [{node_type}]"
-            self.objects_tree.insert("", tk.END, iid=node_id, text=display_text)
-
-    def on_select_object_node(self, event):
-        """Highlights the selected vector item node inside canvas workspace."""
-        selected_items = self.objects_tree.selection()
-        if not selected_items:
-            return
-        node_id = selected_items[0]
-        self.draw_workspace(highlight_id=node_id)
+        # Bind hotkeys for quick, seamless workspace syncing
+        self.bind("<F5>", lambda event: self.reload_file_contents())
+        self.bind("<Control-r>", lambda event: self.reload_file_contents())
+        self.bind("<Control-R>", lambda event: self.reload_file_contents())
 
     def draw_workspace(self, highlight_id=None):
         """Renders vector elements with precision on designer canvas."""
         self.canvas.delete("all")
-        self.populate_sidebar_list()
 
         width = self.canvas.winfo_width()
         height = self.canvas.winfo_height()
@@ -445,21 +326,21 @@ class REPIDesignerWindow(tk.Tk):
         if width <= 1 or height <= 1:
             return
 
-        # Render subtle coordinates grid matrix
-        if self.show_grid.get():
+        # Render subtle coordinates grid matrix (only if toggled)
+        if self.show_grid:
             grid_interval = 40
             for x in range(0, width, grid_interval):
-                self.canvas.create_line(x, 0, x, height, fill=COLOR_GRID_LINE, width=1)
+                self.canvas.create_line(x, 0, x, height, fill="#2D3748", width=1)
             for y in range(0, height, grid_interval):
-                self.canvas.create_line(0, y, width, y, fill=COLOR_GRID_LINE, width=1)
+                self.canvas.create_line(0, y, width, y, fill="#2D3748", width=1)
 
         # Draw vector layout elements sequentially
         for obj in self.objects_list:
             obj_type = obj.get("type", "unknown").lower()
             is_highlighted = (obj.get("id") == highlight_id)
 
-            outline_color = COLOR_ACCENT if is_highlighted else COLOR_BORDER
-            outline_width = 3 if is_highlighted else 1
+            outline_color = COLOR_ACCENT if is_highlighted else ""
+            outline_width = 3 if is_highlighted else 0
 
             # Handle Polygon/Vector UI element shape drawing
             if obj_type == "ui":
@@ -474,12 +355,11 @@ class REPIDesignerWindow(tk.Tk):
                             pass
                     
                     if len(coords) >= 4:
-                        # Draw filled polygon boundary or outline loops
                         if len(coords) == 4:
                             self.canvas.create_line(
                                 coords[0], coords[1], coords[2], coords[3],
                                 fill=obj.get("color_bg", "#FFFFFF"),
-                                width=outline_width + 1,
+                                width=2,
                                 tags=obj.get("id")
                             )
                         else:
@@ -499,8 +379,8 @@ class REPIDesignerWindow(tk.Tk):
                         self.canvas.create_oval(
                             px - r, py - r, px + r, py + r,
                             fill=obj.get("color_bg", COLOR_ACCENT),
-                            outline=outline_color,
-                            width=outline_width,
+                            outline=outline_color if outline_color else obj.get("color_bg", COLOR_ACCENT),
+                            width=outline_width if outline_width else 1,
                             tags=obj.get("id")
                         )
                     except (ValueError, TypeError):
@@ -532,13 +412,11 @@ class REPIDesignerWindow(tk.Tk):
                             tags=obj.get("id")
                         )
                         
-                        # Handle text bounding box background shading
                         bbox = self.canvas.bbox(t_id)
                         if bbox:
-                            # Push background card to lower layer stack below text nodes
                             bg_rect = self.canvas.create_rectangle(
                                 bbox[0] - 4, bbox[1] - 4, bbox[2] + 4, bbox[3] + 4,
-                                fill=obj.get("color_bg", COLOR_WORKSPACE),
+                                fill=obj.get("color_bg", COLOR_BG_DARK),
                                 outline=outline_color if is_highlighted else "",
                                 width=outline_width,
                                 tags=obj.get("id")
@@ -558,7 +436,6 @@ class REPIDesignerWindow(tk.Tk):
                         label_text = obj.get("text", "Button")
                         font_spec = (obj.get("font", "Segoe UI"), 9, "bold" if obj.get("style_bold") else "normal")
                         
-                        # Generate flat layout dimension
                         pad_x, pad_y = 16, 8
                         t_id = self.canvas.create_text(
                             bx, by,
@@ -574,8 +451,8 @@ class REPIDesignerWindow(tk.Tk):
                             btn_card = self.canvas.create_rectangle(
                                 bbox[0] - pad_x, bbox[1] - pad_y, bbox[2] + pad_x, bbox[3] + pad_y,
                                 fill=obj.get("color_bg", "#4F46E5"),
-                                outline=outline_color,
-                                width=outline_width,
+                                outline=outline_color if outline_color else "#4F46E5",
+                                width=outline_width if outline_width else 1,
                                 tags=obj.get("id")
                             )
                             self.canvas.tag_lower(btn_card, t_id)
@@ -591,24 +468,23 @@ class REPIDesignerWindow(tk.Tk):
                         iy = float(loc[0].get("y", 0))
                         iw, ih = 140, 90
                         
-                        # Draw high fidelity mockup placeholder card representing vector image
                         img_card = self.canvas.create_rectangle(
                             ix, iy, ix + iw, iy + ih,
                             fill=obj.get("color_bg", "#1E293B"),
-                            outline=outline_color,
-                            width=outline_width,
+                            outline=outline_color if outline_color else "#1E293B",
+                            width=outline_width if outline_width else 1,
                             tags=obj.get("id")
                         )
                         
                         # Draw visual center icon placeholder
-                        self.canvas.create_line(ix, iy, ix + iw, iy + ih, fill=COLOR_BORDER, width=1)
-                        self.canvas.create_line(ix, iy + ih, ix + iw, iy, fill=COLOR_BORDER, width=1)
+                        self.canvas.create_line(ix, iy, ix + iw, iy + ih, fill="#334155", width=1)
+                        self.canvas.create_line(ix, iy + ih, ix + iw, iy, fill="#334155", width=1)
                         
                         self.canvas.create_text(
                             ix + iw/2, iy + ih/2,
                             text="[IMAGE]",
                             font=("Segoe UI", 9, "bold"),
-                            fill=COLOR_TEXT_MUTED,
+                            fill="#94A3B8",
                             anchor="center",
                             tags=obj.get("id")
                         )
@@ -629,7 +505,6 @@ class REPIDesignerWindow(tk.Tk):
             lines = new_content.splitlines()
             parsed_ops = parse_repi_script(lines, env_vars)
 
-            # Re-verify and rebuild objects mappings
             new_objects_map = {}
             for action, data in parsed_ops:
                 if action == "create":
@@ -672,10 +547,8 @@ def register_repi_extension():
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Software\Classes\.repi") as key:
             winreg.SetValueEx(key, "", 0, winreg.REG_SZ, "repi_file")
             
-        # Register shell actions to execute using the graphical designer mode window directly!
         command_path = r"Software\Classes\repi_file\shell\open\command"
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, command_path) as key:
-            # Running with raw interpreter directly initiates our Tkinter loop without spawning terminal window!
             cmd_line = f'"{python_exe}" "{script_path}" "%1"'
             winreg.SetValueEx(key, "", 0, winreg.REG_SZ, cmd_line)
             
@@ -718,7 +591,6 @@ def unregister_repi_extension():
 
 def main():
     try:
-        # Check argument triggers
         if len(sys.argv) > 1:
             arg = sys.argv[1]
             if arg == "--register":
@@ -731,7 +603,6 @@ def main():
             # Treat argument as active script file
             file_path = os.path.abspath(arg.strip('"\''))
             if not file_path.lower().endswith(".repi"):
-                # Handle error feedback natively
                 root = tk.Tk()
                 root.withdraw()
                 messagebox.showerror(
@@ -784,7 +655,7 @@ def main():
         else:
             # Fallback console run instructions if loaded empty
             print("[REPI DESIGN SYSTEM ENGINE ACTIVE]")
-            print("To run visual previews directly in separate workspace window windows, register the file associations:")
+            print("To run visual previews directly in separate workspace windows, register the file associations:")
             print("  python repi.py --register")
             print("\nRun any explicit file script with:")
             print("  python repi.py your_script.repi\n")
